@@ -798,35 +798,108 @@
                     else currentPage = Number(v);
                     renderPage();
                     scrollToGalleryTop();   // 翻页时回到大标题处
+                    // 翻页后预加载新页图片到缓存
+                    setTimeout(() => {
+                        if (currentList.length) {
+                            const start = (currentPage - 1) * PAGE_SIZE;
+                            for (let i = 0; i < PAGE_SIZE; i++) {
+                                const idx = start + i;
+                                if (idx < currentList.length) {
+                                    const url = currentList[idx].file;
+                                    if (!imageCache.has(url)) {
+                                        const img = new Image();
+                                        img.src = url;
+                                        imageCache.set(url, img);
+                                    }
+                                }
+                            }
+                        }
+                    }, 100);
                 });
             });
         }
 
-        // ===== 灯箱 =====
+        // ===== 灯箱（预加载 + 防闪烁） =====
+        const lightboxImg = document.getElementById('lightboxImg');
+        const lightboxEl = document.getElementById('lightbox');
+        let isLoading = false;          // 防止重复点击
+
+        // 预缓存：前后各 2 张
+        const imageCache = new Map();
+        function preloadAround(index, list) {
+            if (!list.length) return;
+            for (const offset of [1, -1, 2, -2]) {
+                const idx = (index + offset + list.length) % list.length;
+                const url = list[idx].file;
+                if (!imageCache.has(url)) {
+                    const img = new Image();
+                    img.src = url;
+                    imageCache.set(url, img);
+                }
+            }
+        }
+
         function openLightbox(index) {
-            if (!currentList.length) return;
+            if (!currentList.length || isLoading) return;
+            isLoading = true;
+
             currentLightboxIndex = (index + currentList.length) % currentList.length;
             const p = currentList[currentLightboxIndex];
-            document.getElementById('lightboxImg').src = p.file;        // 灯箱用原图
+
+            // 先更新文字信息（立即生效，无延迟）
             document.getElementById('lightboxExif').innerHTML = exifPlain(p);
             document.getElementById('lightboxCounter').textContent =
                 `${String(currentLightboxIndex + 1).padStart(2, '0')} / ${String(currentList.length).padStart(2, '0')}`;
-            document.getElementById('lightbox').classList.add('open');
-            document.body.style.overflow = 'hidden';
+
+            // 如果缓存中已有这张图，直接换
+            if (imageCache.has(p.file)) {
+                lightboxImg.src = p.file;
+                lightboxEl.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                preloadAround(currentLightboxIndex, currentList);
+                isLoading = false;
+                return;
+            }
+
+            // 否则新建一个 Image 对象预加载，加载完成后再替换
+            const tempImg = new Image();
+            tempImg.onload = () => {
+                lightboxImg.src = p.file;
+                imageCache.set(p.file, tempImg);
+                lightboxEl.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                preloadAround(currentLightboxIndex, currentList);
+                isLoading = false;
+            };
+            tempImg.onerror = () => {
+                // 加载失败仍然显示但不阻塞
+                lightboxImg.src = p.file;
+                lightboxEl.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                isLoading = false;
+            };
+            tempImg.src = p.file;
+
+            // 首次打开时先显示 lightbox（用旧图占位），加载完成后替换
+            if (!lightboxEl.classList.contains('open')) {
+                lightboxEl.classList.add('open');
+                document.body.style.overflow = 'hidden';
+            }
         }
+
         function closeLightbox() {
-            document.getElementById('lightbox').classList.remove('open');
+            lightboxEl.classList.remove('open');
             document.body.style.overflow = '';
         }
 
         document.getElementById('lightboxClose').addEventListener('click', closeLightbox);
         document.getElementById('lightboxPrev').addEventListener('click', () => openLightbox(currentLightboxIndex - 1));
         document.getElementById('lightboxNext').addEventListener('click', () => openLightbox(currentLightboxIndex + 1));
-        document.getElementById('lightbox').addEventListener('click', (e) => {
+        lightboxEl.addEventListener('click', (e) => {
             if (e.target === e.currentTarget) closeLightbox();
         });
         document.addEventListener('keydown', (e) => {
-            if (!document.getElementById('lightbox').classList.contains('open')) return;
+            if (!lightboxEl.classList.contains('open')) return;
             if (e.key === 'Escape') closeLightbox();
             if (e.key === 'ArrowLeft') openLightbox(currentLightboxIndex - 1);
             if (e.key === 'ArrowRight') openLightbox(currentLightboxIndex + 1);
@@ -835,6 +908,8 @@
             const item = e.target.closest('.gallery-item');
             if (item) openLightbox(Number(item.dataset.index));
         });
+        // 首次进入页面时，预加载第一张
+        setTimeout(() => { if (currentList.length) preloadAround(0, currentList); }, 1000);
 
         // ===== 滚动渐入 =====
         const revealObserver = new IntersectionObserver((entries) => {
